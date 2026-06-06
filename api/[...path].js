@@ -13,9 +13,10 @@ export default async function handler(req, res) {
     const ua = req.headers['user-agent'] || '';
     const isBot = BOT_RE.test(ua);
 
-    const segments = req.query.path || [];
-    const reqPath = '/' + (Array.isArray(segments) ? segments.join('/') : segments);
-    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    // 直接用 req.url,它包含完整 path + query,例如 /SongPractice/xxx?artist_id=2
+    const fullUrl = req.url || '/';
+    const [reqPath, search] = fullUrl.split('?');
+    const qs = search ? '?' + search : '';
 
     const m = reqPath.match(/^\/SongPractice\/([^/?#]+)/);
     const songId = m ? m[1] : null;
