@@ -1,70 +1,50 @@
-const CSR_ORIGIN = 'https://my-gojuon.vercel.app/'; // ← 改成你原本的 CSR 網域
+const CSR_ORIGIN = 'https://my-gojuon.vercel.app'; // 你的原 CSR 網域
 const API_BASE = 'https://pseuder.com/srv_mygojuon3/get_song';
 
 const BOT_RE = /googlebot|bingbot|yandex|baiduspider|duckduckbot|facebookexternalhit|twitterbot|slackbot|linkedinbot|telegrambot|whatsapp|discordbot|applebot/i;
 
-// 防 XSS:注入 HTML 前先 escape
+// 靜態資源副檔名:這些直接導回原網域,不經過 proxy 邏輯
+const ASSET_RE = /\.(js|mjs|css|map|json|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|mp4|webm|txt|xml)$/i;
+
 function esc(s = '') {
     return String(s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 export default async function handler(req, res) {
     const ua = req.headers['user-agent'] || '';
     const isBot = BOT_RE.test(ua);
+
     const segments = req.query.path || [];
     const reqPath = '/' + (Array.isArray(segments) ? segments.join('/') : segments);
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
 
-    // ── 真人:proxy 回傳原 CSR 頁面(網址不變) ──
-    if (!isBot) {
-        try {
-            const target = CSR_ORIGIN + reqPath + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '');
-            const upstream = await fetch(target, {
-                headers: { 'user-agent': ua, 'accept': req.headers['accept'] || '*/*' },
-            });
-            const body = await upstream.arrayBuffer();
-            res.status(upstream.status);
-            const ct = upstream.headers.get('content-type');
-            if (ct) res.setHeader('content-type', ct);
-            const cc = upstream.headers.get('cache-control');
-            if (cc) res.setHeader('cache-control', cc);
-            return res.send(Buffer.from(body));
-        } catch (e) {
-            // proxy 掛了就退回 redirect,至少不會白屏
-            return res.redirect(307, CSR_ORIGIN + reqPath);
-        }
+    // ── 靜態資源:一律 308 導回原網域,讓原網域服務(MIME 才正確) ──
+    if (ASSET_RE.test(reqPath)) {
+        return res.redirect(308, CSR_ORIGIN + reqPath + qs);
     }
 
-    // ── 爬蟲:只對影片頁組完整 HTML,其他頁照樣 proxy ──
+    // ── 影片頁 + 爬蟲:組完整 HTML ──
     const m = reqPath.match(/^\/SongPractice\/([^/?#]+)/);
-    if (!m) {
-        // 非影片頁的爬蟲流量,一樣 proxy 原頁面
-        const upstream = await fetch(CSR_ORIGIN + reqPath);
-        const html = await upstream.text();
-        res.setHeader('content-type', 'text/html; charset=utf-8');
-        return res.send(html);
-    }
+    const songId = m ? m[1] : null;
 
-    const id = m[1];
-    try {
-        const data = await fetch(`${API_BASE}/${encodeURIComponent(id)}`).then(r => r.json());
+    if (isBot && songId) {
+        try {
+            const data = await fetch(`${API_BASE}/${encodeURIComponent(songId)}`).then(r => r.json());
 
-        // ↓↓↓ 對照你實際 JSON 改這三個 key ↓↓↓
-        const title = data.title || data.name || '';
-        const artist = data.singer || data.artist || '';
-        const lyrics = data.lyrics || data.lyric || '';
-        // ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+            // ↓↓↓ 對照實際 JSON 改這三個 key ↓↓↓
+            const title = data.title || data.name || '';
+            const artist = data.singer || data.artist || '';
+            const lyrics = data.lyrics || data.lyric || '';
+            // ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
-        const canonical = `${CSR_ORIGIN}/SongPractice/${encodeURIComponent(id)}`;
-        const desc = `${artist} - ${title} 歌詞 ${lyrics.slice(0, 120).replace(/\s+/g, ' ')}`;
+            const canonical = `${CSR_ORIGIN}/SongPractice/${encodeURIComponent(songId)}${qs}`;
+            const desc = `${artist} - ${title} 歌詞 ${String(lyrics).slice(0, 120).replace(/\s+/g, ' ')}`;
 
-        res.setHeader('content-type', 'text/html; charset=utf-8');
-        res.setHeader('cache-control', 's-maxage=3600, stale-while-revalidate=86400');
-        return res.send(`<!DOCTYPE html>
+            res.setHeader('content-type', 'text/html; charset=utf-8');
+            res.setHeader('cache-control', 's-maxage=3600, stale-while-revalidate=86400');
+            return res.send(`<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -79,12 +59,12 @@ export default async function handler(req, res) {
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">
 ${JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'MusicRecording',
-            name: title,
-            byArtist: { '@type': 'MusicGroup', name: artist },
-            lyrics: { '@type': 'CreativeWork', text: lyrics },
-        })}
+                '@context': 'https://schema.org',
+                '@type': 'MusicRecording',
+                name: title,
+                byArtist: { '@type': 'MusicGroup', name: artist },
+                lyrics: { '@type': 'CreativeWork', text: lyrics },
+            })}
 </script>
 </head>
 <body>
@@ -93,11 +73,22 @@ ${JSON.stringify({
 <pre>${esc(lyrics)}</pre>
 </body>
 </html>`);
+        } catch (e) {
+            // API 掛了就退回 proxy 原頁面
+        }
+    }
+
+    // ── 其他所有情況(真人、或非影片頁的爬蟲):proxy 原網域的 HTML ──
+    try {
+        const upstream = await fetch(CSR_ORIGIN + reqPath + qs, {
+            headers: { 'user-agent': ua, accept: req.headers['accept'] || 'text/html' },
+        });
+        const ct = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        res.status(upstream.status);
+        res.setHeader('content-type', ct);
+        return res.send(buf);
     } catch (e) {
-        // API 掛了就退回 proxy 原頁面,別給爬蟲 500
-        const upstream = await fetch(CSR_ORIGIN + reqPath);
-        const html = await upstream.text();
-        res.setHeader('content-type', 'text/html; charset=utf-8');
-        return res.send(html);
+        return res.redirect(307, CSR_ORIGIN + reqPath + qs);
     }
 }
